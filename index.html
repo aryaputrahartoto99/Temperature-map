@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Land Surface Temperature Dashboard</title>
+<!--
+  EXPECTED DATA: ./lst_timeseries.geojson (EPSG:4326), a FeatureCollection of Polygon/MultiPolygon features:
+    { "type":"Feature", "geometry":{...},
+      "properties":{ "id":1, "name":"Area A", "temp_t1":29.4, "temp_t2":33.1, "temp_t3":31.0 } }
+  Values are °C (set CONFIG.valueUnit = "K" for Kelvin). Property keys and period labels live in CONFIG below.
+
+  DEPLOY ON GITHUB PAGES:
+    1) Commit index.html and lst_timeseries.geojson to the repository root.
+    2) Settings > Pages > Build and deployment > Deploy from a branch > main / (root).
+    3) Open https://<user>.github.io/<repo>/
+  Opening the file via file:// blocks fetch(); a generated sample dataset is shown instead.
+-->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder@2.4.0/dist/Control.Geocoder.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-minimap@3.6.1/dist/Control.MiniMap.min.css">
+<style>
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{display:flex;overflow:hidden;font:14px/1.45 "Segoe UI",system-ui,-apple-system,sans-serif;font-variant-numeric:tabular-nums}
+#sb{--bg:#f6f8fa;--fg:#14212b;--mut:#4a5b68;--bd:#d5dde3;--ac:#0f6b73;--cd:#fff;width:340px;flex:none;height:100%;overflow-y:auto;background:var(--bg);color:var(--fg);border-right:1px solid var(--bd);transition:margin .25s;z-index:1200}
+#sb[data-theme=dark]{--bg:#101a22;--fg:#e6edf1;--mut:#9fb0bc;--bd:#2a3a46;--ac:#4fc3cc;--cd:#18252f}
+body.closed #sb{margin-left:-340px}
+#mw{flex:1;position:relative;min-width:0}
+#map{position:absolute;inset:0}
+header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px 10px 58px;min-height:58px;position:sticky;top:0;z-index:2;background:var(--bg);border-bottom:1px solid var(--bd)}
+h1{font-size:16px;margin:0;line-height:1.2}
+h3{margin:0 0 4px;font-size:15px}
+details{border-bottom:1px solid var(--bd);padding:0 14px}
+summary{cursor:pointer;font-weight:600;padding:11px 0;list-style:none;display:flex;justify-content:space-between}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";color:var(--mut)}
+details[open]>summary::after{content:"–"}
+details>:not(summary,label){margin:0 0 12px}
+label{display:block;color:var(--mut);margin-bottom:4px}
+label b{color:var(--fg)}
+input[type=range]{width:100%;margin:0 0 6px;accent-color:var(--ac)}
+button{font:inherit;color:var(--fg);background:var(--cd);border:1px solid var(--bd);border-radius:6px;padding:6px 12px;cursor:pointer}
+button:hover{border-color:var(--ac)}
+:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+fieldset{border:1px solid var(--bd);border-radius:6px}
+fieldset label{display:flex;gap:8px;align-items:center;color:var(--fg)}
+.tk{display:flex;justify-content:space-between;font-size:12px;color:var(--mut)}
+#st{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+#st div{background:var(--cd);border:1px solid var(--bd);border-radius:6px;padding:6px 8px}
+#st div:last-child{grid-column:span 2}
+#st dt{font-size:12px;color:var(--mut)}
+#st dd{margin:0;font-weight:600}
+.lg{display:flex;align-items:center;gap:8px;margin:3px 0}
+.lg i{width:26px;height:14px;border:1px solid #0004}
+.cv{height:210px;position:relative}
+#tg{position:fixed;top:10px;left:10px;z-index:1300;width:38px;height:38px;padding:0;font-size:18px}
+#msg{position:absolute;z-index:1100;top:10px;left:50%;transform:translateX(-50%);max-width:min(560px,calc(100% - 140px));padding:9px 14px;border-radius:6px;color:#fff;cursor:pointer;box-shadow:0 2px 8px #0005}
+#msg.err{background:#b42318}
+#msg.inf{background:#1f3a4d}
+#msg[hidden],#spin[hidden]{display:none}
+#spin{position:absolute;inset:0;z-index:1150;display:grid;place-items:center;background:#0006}
+#spin::after{content:"";width:46px;height:46px;border:5px solid #fff5;border-top-color:#fff;border-radius:50%;animation:r 1s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+#bm .leaflet-control-layers{float:none;box-shadow:none;background:none;border:0;color:var(--fg)}
+#bm .leaflet-control-layers-expanded{padding:0}
+#bm label{color:var(--fg);margin:0}
+.loc{padding:6px 10px;box-shadow:0 1px 5px #0006;color:#14212b;background:#fff}
+.co{background:#fffc;padding:2px 8px;font-size:12px;color:#14212b}
+@media(max-width:767px){
+ #sb{position:fixed;left:0;top:0;margin-left:0!important;max-width:88vw;transform:translateX(-100%);transition:transform .25s;box-shadow:4px 0 16px #0005}
+ body:not(.closed) #sb{transform:none}
+ #msg{top:auto;bottom:10px;left:10px;right:10px;transform:none;max-width:none}
+}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation-duration:3s!important}}
+</style>
+</head>
+<body>
+<button id="tg" aria-label="Toggle sidebar" aria-controls="sb" aria-expanded="true">☰</button>
+<aside id="sb" data-theme="light" aria-label="Dashboard controls">
+ <header><h1>Land surface temperature</h1><button id="th" aria-label="Switch between light and dark theme">◐</button></header>
+ <details open><summary>Data period</summary>
+  <label for="per">Period: <b id="pl"></b></label>
+  <input id="per" type="range" min="0" max="2" step="1" value="0">
+  <div class="tk" id="tk" aria-hidden="true"></div>
+  <button id="play" aria-label="Play period animation">▶ Play</button>
+ </details>
+ <details open><summary>Filters</summary>
+  <label for="thr">Show areas at or above: <b id="tl"></b></label>
+  <input id="thr" type="range">
+  <p id="cnt" aria-live="polite"></p>
+  <fieldset><legend>UHI classes</legend><div id="cls"></div></fieldset>
+  <button id="exp" aria-label="Download filtered features as GeoJSON">Download GeoJSON</button>
+ </details>
+ <details><summary>Layer settings</summary>
+  <label for="op">Layer opacity: <b id="ol"></b></label>
+  <input id="op" type="range" min="0" max="100" step="1">
+ </details>
+ <details open><summary>Basemap</summary><div id="bm"></div></details>
+ <details open><summary>Statistics</summary><dl id="st"></dl></details>
+ <details open><summary>Legend</summary><div id="lg"></div></details>
+ <details id="sel"><summary>Selected feature</summary>
+  <div id="si">Click an area on the map to see its details.</div>
+  <div class="cv"><canvas id="ch" role="img" aria-label="Bar chart comparing temperature across periods"></canvas></div>
+ </details>
+</aside>
+<div id="mw"><div id="map"></div><div id="msg" role="alert" hidden></div><div id="spin" role="status" aria-label="Loading data"></div></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-control-geocoder@2.4.0/dist/Control.Geocoder.js"></script>
+<script src="https://unpkg.com/leaflet-minimap@3.6.1/dist/Control.MiniMap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+(() => {
+'use strict';
+
+/* ================= CONFIG ================= */
+const CONFIG = {
+  dataUrl: './lst_timeseries.geojson',
+  idKey: 'id', nameKey: 'name',
+  valueKeys: ['temp_t1', 'temp_t2', 'temp_t3'],
+  periods: ['Morning', 'Afternoon', 'Night'],            // same order as valueKeys
+  valueUnit: 'C',                                        // 'C' or 'K' (K is converted with value - 273.15)
+  ramp: ['#ffffb2', '#fed976', '#feb24c', '#fd8d3c', '#f03b20', '#bd0026'],   // YlOrRd, 6 classes
+  uhi: [{ key: 'cool', label: 'Cool', max: 28 }, { key: 'mod', label: 'Moderate', max: 32 },
+        { key: 'hot', label: 'Hot', max: 36 }, { key: 'vhot', label: 'Very hot', max: Infinity }],
+  center: [-5.43, 105.26], zoom: 11,
+  opacity: 70, thresholdStep: 0.5, playMs: 1500
+};
+
+/* ================= STATE ================= */
+const S = { feats: [], fc: null, p: 0, thr: 0, op: 0.7, on: {}, sel: null, lo: 0, hi: 1, mean: [], lyr: null, chart: null, timer: null };
+
+/* ================= UTILITIES ================= */
+const $ = id => document.getElementById(id);
+const db = (fn, ms = 100) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+const esc = s => String(s).replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';');
+const mn = a => a.reduce((x, y) => (y < x ? y : x), Infinity);
+const mx = a => a.reduce((x, y) => (y > x ? y : x), -Infinity);
+const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
+const med = a => { const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+function msg(text, err, sticky) {
+  const m = $('msg'); m.textContent = text; m.className = err ? 'err' : 'inf'; m.hidden = false;
+  clearTimeout(msg.t); if (!sticky) msg.t = setTimeout(() => { m.hidden = true; }, 7000);
+}
+$('msg').onclick = () => { $('msg').hidden = true; };
+function drawer(open) {
+  const was = !document.body.classList.contains('closed');
+  document.body.classList.toggle('closed', !open); $('tg').setAttribute('aria-expanded', open);
+  if (was !== open) setTimeout(() => map.invalidateSize(), 300);
+}
+
+/* ================= MAP INIT ================= */
+const map = L.map('map', { preferCanvas: true, zoomControl: false, center: CONFIG.center, zoom: CONFIG.zoom });
+L.control.zoom({ position: 'topright' }).addTo(map);
+const tiles = {
+  'OpenStreetMap': () => L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' }),
+  'Esri World Imagery': () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Tiles © Esri' }),
+  'CartoDB Dark Matter': () => L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap, © CARTO' })
+};
+const base = {}, mini = {};
+Object.keys(tiles).forEach(k => { base[k] = tiles[k](); mini[k] = tiles[k](); });   // separate instances for the minimap
+base['OpenStreetMap'].addTo(map);
+const lcl = L.control.layers(base, {}, { collapsed: false }).addTo(map);
+$('bm').appendChild(lcl.getContainer());                                           // basemap switcher lives in the sidebar
+const mm = new L.Control.MiniMap(mini['OpenStreetMap'], { position: 'bottomleft', toggleDisplay: true, width: 140, height: 140 }).addTo(map);
+map.on('baselayerchange', e => mm.changeLayer(mini[e.name]));
+L.control.scale({ metric: true, imperial: false, position: 'bottomright' }).addTo(map);
+
+const coord = L.control({ position: 'bottomright' });
+coord.onAdd = () => { const d = L.DomUtil.create('div', 'co'); d.id = 'co'; d.textContent = 'Lat, Lng: move the cursor'; return d; };
+coord.addTo(map);
+map.on('mousemove', e => { $('co').textContent = `Lat ${e.latlng.lat.toFixed(5)}, Lng ${e.latlng.lng.toFixed(5)}`; });
+
+let pin, me;
+L.Control.geocoder({ defaultMarkGeocode: false, collapsed: false, placeholder: 'Search a place…', geocoder: L.Control.Geocoder.nominatim() })
+  .on('markgeocode', e => {
+    if (pin) pin.remove();
+    pin = L.marker(e.geocode.center).addTo(map).bindPopup(esc(e.geocode.name)).openPopup();
+    map.fitBounds(e.geocode.bbox);
+  }).addTo(map);
+const gi = document.querySelector('.leaflet-control-geocoder-form input'); if (gi) gi.setAttribute('aria-label', 'Search a place');
+
+const locCtl = L.control({ position: 'topright' });
+locCtl.onAdd = () => {
+  const b = L.DomUtil.create('button', 'loc'); b.type = 'button'; b.textContent = '📍 Locate me'; b.setAttribute('aria-label', 'Show my location');
+  L.DomEvent.disableClickPropagation(b); L.DomEvent.on(b, 'click', locate); return b;
+};
+locCtl.addTo(map);
+function locate() {
+  if (!navigator.geolocation) return msg('Your browser does not support geolocation.', true);
+  msg('Finding your location…');
+  navigator.geolocation.getCurrentPosition(p => {
+    const ll = [p.coords.latitude, p.coords.longitude];
+    if (me) me.remove();
+    me = L.layerGroup([L.circle(ll, { radius: p.coords.accuracy, weight: 1 }), L.marker(ll)]).addTo(map);
+    map.flyTo(ll, 15); $('msg').hidden = true;
+  }, err => msg(err.code === 1 ? 'Location access was denied. Allow it in your browser settings and try again.'
+    : err.code === 3 ? 'Finding your location timed out. Try again.' : 'Your location is unavailable right now.', true),
+  { enableHighAccuracy: true, timeout: 10000 });
+}
+
+/* ================= DATA LOADING ================= */
+function sample() {                                       // 20x20 grid around Bandar Lampung with a hot urban core
+  const [cy, cx] = CONFIG.center, n = 20, d = 0.006, off = CONFIG.valueUnit === 'K' ? 273.15 : 0;
+  const bs = [26.5, 30, 25], amp = [4, 7, 4], features = [];
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) {
+    const x = cx + (c - n / 2) * d, y = cy + (r - n / 2) * d;
+    const q = Math.hypot(c + 0.5 - n / 2, r + 0.5 - n / 2) / (0.3 * n), g = Math.exp(-q * q);
+    const properties = { [CONFIG.idKey]: r * n + c + 1, [CONFIG.nameKey]: `Cell ${r + 1}-${c + 1}` };
+    CONFIG.valueKeys.forEach((k, i) => { properties[k] = +(bs[i % 3] + amp[i % 3] * g + (rnd() - 0.5) * 1.6 + off).toFixed(1); });
+    features.push({ type: 'Feature', properties, geometry: { type: 'Polygon', coordinates: [[[x, y], [x + d, y], [x + d, y + d], [x, y + d], [x, y]]] } });
+  }
+  return { type: 'FeatureCollection', features };
+}
+function prep(fc) {                                       // convert units, drop null/NaN rows, compute global range
+  const conv = v => (CONFIG.valueUnit === 'K' ? v - 273.15 : v);
+  S.feats = (fc.features || []).filter(f => f && f.geometry && f.properties).map(f => {
+    f._v = CONFIG.valueKeys.map(k => { const x = f.properties[k]; return x == null || x === '' ? NaN : conv(+x); });
+    return f;
+  }).filter(f => f._v.every(Number.isFinite)).map((f, i) => { f._i = i; return f; });
+  if (!S.feats.length) throw new Error('no features with numeric values');
+  const all = S.feats.flatMap(f => f._v);
+  S.lo = mn(all); S.hi = mx(all);
+  S.mean = CONFIG.periods.map((_, i) => avg(S.feats.map(f => f._v[i])));
+  S.fc = { type: 'FeatureCollection', features: S.feats };
+}
+async function load() {
+  try {
+    const r = await fetch(CONFIG.dataUrl);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    prep(await r.json());
+  } catch (e) {
+    msg(`Could not load ${CONFIG.dataUrl} (${e.message}). If you opened this page via file://, serve it over HTTP. Showing generated sample data.`, true, true);
+    prep(sample());
+  }
+  try { init(); } catch (e) { msg('Dashboard error: ' + e.message, true, true); } finally { $('spin').hidden = true; }
+}
+
+/* ================= STYLING HELPERS ================= */
+const color = v => CONFIG.ramp[Math.min(CONFIG.ramp.length - 1, Math.max(0, Math.floor((v - S.lo) / ((S.hi - S.lo) || 1) * CONFIG.ramp.length)))];
+const cls = v => { const i = CONFIG.uhi.findIndex(c => v < c.max); return i < 0 ? CONFIG.uhi.length - 1 : i; };
+const shown = f => { const v = f._v[S.p]; return v >= S.thr && S.on[CONFIG.uhi[cls(v)].key]; };
+const style = f => { const s = f._i === S.sel; return { fillColor: color(f._v[S.p]), fillOpacity: S.op, color: s ? '#00b8d9' : '#555', weight: s ? 4 : 0.6, opacity: s ? 1 : Math.min(1, S.op + 0.2) }; };
+function front() { S.lyr.eachLayer(l => { if (l.feature._i === S.sel) l.bringToFront(); }); }
+function render() {                                       // re-filter from cached data (no re-fetch)
+  if (S.lyr) map.removeLayer(S.lyr);
+  S.lyr = L.geoJSON(S.fc, { filter: shown, style, onEachFeature: (f, l) => l.on('click', () => select(f._i)) }).addTo(map);
+  front();
+  $('cnt').textContent = `${S.lyr.getLayers().length} of ${S.feats.length} features shown`;
+}
+function labels() {
+  $('pl').textContent = CONFIG.periods[S.p]; $('per').value = S.p;
+  $('tl').textContent = S.thr.toFixed(1) + ' °C'; $('ol').textContent = Math.round(S.op * 100) + '%';
+}
+function stats() {                                        // whole dataset, active period
+  const v = S.feats.map(f => f._v[S.p]), pct = v.filter(x => x >= S.thr).length / v.length * 100;
+  $('st').innerHTML = [['Minimum', mn(v).toFixed(1) + ' °C'], ['Maximum', mx(v).toFixed(1) + ' °C'], ['Mean', avg(v).toFixed(1) + ' °C'],
+    ['Median', med(v).toFixed(1) + ' °C'], ['Features at or above threshold', pct.toFixed(1) + '%']].map(([k, x]) => `<div><dt>${k}</dt><dd>${x}</dd></div>`).join('');
+}
+function refresh() { labels(); stats(); render(); panel(); }
+function init() {
+  const lo = Math.floor(S.lo), hi = Math.ceil(S.hi);
+  Object.assign($('thr'), { min: lo, max: hi, step: CONFIG.thresholdStep, value: lo });
+  S.thr = lo; S.op = CONFIG.opacity / 100; $('op').value = CONFIG.opacity;
+  $('per').max = CONFIG.periods.length - 1;
+  $('tk').innerHTML = CONFIG.periods.map(p => `<span>${esc(p)}</span>`).join('');
+  $('cls').innerHTML = CONFIG.uhi.map((c, i) => {
+    S.on[c.key] = true; const p = CONFIG.uhi[i - 1];
+    const r = !p ? `&lt; ${c.max}` : c.max === Infinity ? `&gt; ${p.max}` : `${p.max}–${c.max}`;
+    return `<label><input type="checkbox" checked data-k="${c.key}"> ${esc(c.label)} (${r} °C)</label>`;
+  }).join('');
+  const w = (S.hi - S.lo) / CONFIG.ramp.length;
+  $('lg').innerHTML = CONFIG.ramp.map((c, i) => `<div class="lg"><i style="background:${c}"></i>${(S.lo + w * i).toFixed(1)} – ${(S.lo + w * (i + 1)).toFixed(1)} °C</div>`).join('');
+  map.fitBounds(L.geoJSON(S.fc).getBounds());
+  refresh();
+}
+
+/* ================= CONTROLS ================= */
+const rf = db(refresh), ro = db(() => S.lyr && S.lyr.setStyle(style));
+$('per').oninput = e => { S.p = +e.target.value; labels(); rf(); };
+$('thr').oninput = e => { S.thr = +e.target.value; labels(); rf(); };
+$('op').oninput = e => { S.op = e.target.value / 100; labels(); ro(); };
+$('cls').onchange = e => { if (e.target.dataset.k) { S.on[e.target.dataset.k] = e.target.checked; rf(); } };
+$('play').onclick = () => {
+  if (S.timer) { clearInterval(S.timer); S.timer = null; }
+  else S.timer = setInterval(() => { S.p = (S.p + 1) % CONFIG.periods.length; refresh(); }, CONFIG.playMs);
+  $('play').textContent = S.timer ? '⏸ Pause' : '▶ Play';
+  $('play').setAttribute('aria-label', S.timer ? 'Pause period animation' : 'Play period animation');
+};
+$('exp').onclick = () => {
+  try {
+    const features = S.feats.filter(shown).map(f => ({ type: 'Feature', geometry: f.geometry,
+      properties: { ...f.properties, active_period: CONFIG.periods[S.p], active_value_c: +f._v[S.p].toFixed(2), uhi_class: CONFIG.uhi[cls(f._v[S.p])].label } }));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify({ type: 'FeatureCollection', features })], { type: 'application/geo+json' }));
+    a.download = 'lst_filtered.geojson'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) { msg('Export failed: ' + e.message, true); }
+};
+$('th').onclick = () => { const s = $('sb'); s.dataset.theme = s.dataset.theme === 'dark' ? 'light' : 'dark'; panel(); };
+$('tg').onclick = () => drawer(document.body.classList.contains('closed'));
+drawer(innerWidth >= 768);
+
+/* ================= CHART ================= */
+function select(i) {                                      // highlight polygon + fill the sidebar panel (no popup)
+  S.sel = i; $('sel').open = true; drawer(true);
+  S.lyr.setStyle(style); front(); panel();
+}
+function panel() {
+  const f = S.feats[S.sel]; if (!f) return;
+  const v = f._v[S.p], cs = getComputedStyle($('sb')), fg = cs.getPropertyValue('--fg').trim(), bd = cs.getPropertyValue('--bd').trim();
+  $('si').innerHTML = `<h3>${esc(f.properties[CONFIG.nameKey] ?? 'Feature ' + f._i)}</h3><p>${esc(CONFIG.periods[S.p])}: <b>${v.toFixed(1)} °C</b>, UHI class: <b>${esc(CONFIG.uhi[cls(v)].label)}</b></p>`;
+  try {
+    if (S.chart) S.chart.destroy();                       // avoid leaks: always recreate
+    S.chart = new Chart($('ch'), {
+      type: 'bar',
+      data: { labels: CONFIG.periods, datasets: [
+        { label: 'Temperature (°C)', data: f._v, backgroundColor: f._v.map(color), borderColor: fg, borderWidth: f._v.map((_, k) => (k === S.p ? 2 : 0)) },
+        { type: 'line', label: `Dataset mean, ${CONFIG.periods[S.p]}`, data: f._v.map(() => S.mean[S.p]), borderColor: '#2563eb', borderDash: [6, 4], borderWidth: 2, pointRadius: 0 }
+      ] },
+      options: { responsive: true, maintainAspectRatio: false,
+        scales: { y: { min: Math.floor(S.lo) - 1, max: Math.ceil(S.hi) + 1, title: { display: true, text: '°C', color: fg }, ticks: { color: fg }, grid: { color: bd } }, x: { ticks: { color: fg }, grid: { display: false } } },
+        plugins: { legend: { labels: { color: fg } } } }
+    });
+  } catch (e) { msg('Chart unavailable: ' + e.message, true); }
+}
+
+load();
+})();
+</script>
+</body>
+</html>
